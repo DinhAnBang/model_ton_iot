@@ -1,0 +1,23 @@
+# Python environments and caches
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+.pytest_cache/
+
+# Large source datasets and generated data products
+/Processed_datasets/
+/Raw_datasets/
+/Train_Test_datasets/
+/Description_stats_datasets/
+/SecuityEvents_GroundTruth_datasets/
+/SecurityEvents_GroundTruth_datasets/
+/research_pipeline/output/
+/research_pipeline/reports/
+/research_pipeline/_pre_refactor_backup_*/
+
+# Large local exports
+*.zip
+*.parquet
+*.log

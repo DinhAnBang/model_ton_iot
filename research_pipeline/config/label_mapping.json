@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "canonical_vocabulary": [
+    "normal",
+    "backdoor",
+    "ddos",
+    "dos",
+    "injection",
+    "mitm",
+    "password",
+    "ransomware",
+    "scanning",
+    "xss"
+  ],
+  "binary_label": {
+    "0": "normal",
+    "1": "attack",
+    "evidence": "Phase-1 description audit: platform descriptions state label 0=normal and label 1=attack; processed values observed are 0 and 1.",
+    "evidence_sources": [
+      "research_pipeline/reports/audit_summary.md",
+      "Description_stats_datasets/Description_stats_IoT_dataset/IoT Features-Description.xlsx",
+      "Description_stats_datasets/Description_stats_Linux_dataset/Linux Features-Description.xlsx",
+      "Description_stats_datasets/Description_stats_Network_dataset/Network Features-Description.xlsx",
+      "Description_stats_datasets/Description_stats_Windows_dataset/Windows Features.xlsx"
+    ]
+  },
+  "type_mapping": [
+    {"raw_type": "normal", "canonical_type": "normal"},
+    {"raw_type": "backdoor", "canonical_type": "backdoor"},
+    {"raw_type": "DDoS", "canonical_type": "ddos"},
+    {"raw_type": "ddos", "canonical_type": "ddos"},
+    {"raw_type": "DoS", "canonical_type": "dos"},
+    {"raw_type": "dos", "canonical_type": "dos"},
+    {"raw_type": "injection", "canonical_type": "injection"},
+    {"raw_type": "Injection", "canonical_type": "injection"},
+    {"raw_type": "MITM", "canonical_type": "mitm"},
+    {"raw_type": "MIMT", "canonical_type": "mitm"},
+    {"raw_type": "mitm", "canonical_type": "mitm"},
+    {"raw_type": "password", "canonical_type": "password"},
+    {"raw_type": "scanning", "canonical_type": "scanning"},
+    {"raw_type": "XSS", "canonical_type": "xss"},
+    {"raw_type": "xss", "canonical_type": "xss"},
+    {"raw_type": "runsomware", "canonical_type": "ransomware"},
+    {"raw_type": "runsomeware", "canonical_type": "ransomware"},
+    {"raw_type": "ransomware", "canonical_type": "ransomware"}
+  ],
+  "preservation_contract": {
+    "raw_type": "Keep the original source value unchanged.",
+    "canonical_type": "Add only after applying this versioned map; do not overwrite raw_type.",
+    "unknown_value_policy": "Keep raw_type and set canonical_type=UNKNOWN; do not force an unmapped value."
+  }
+}
