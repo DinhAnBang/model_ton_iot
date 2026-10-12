@@ -7,14 +7,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..common.config import MAX_CATEGORICAL_LEVELS, MEDIAN_SAMPLE_SIZE, SPLIT_CODE
+from ..common.config import MAX_CATEGORICAL_LEVELS, MEDIAN_SAMPLE_SIZE, QUARANTINE_CODE, SPLIT_CODE
 from ..common.errors import PipelineError
 from ..common.utils import log
 from .duplicate_handler import DuplicateRouter, duplicate_fingerprints
-from .feature_selector import final_features
+from .feature_selector import final_features, infer_train_feature_specs
 from .models import FeatureSpec, GroupPlan, RunState
 from .normalization import validate_chunk
-from .split_data import base_split_codes
+from .split_data import base_split_codes, remediated_split_codes
 
 
 def update_median_sample(spec: FeatureSpec, values: np.ndarray) -> None:
@@ -40,8 +40,13 @@ def fit_group(
     type_mapping: dict[str, str],
     chunk_size: int,
     state: RunState,
+    *,
+    quarantine_invalid: bool = False,
 ) -> None:
     log(f"Fit train-only preprocessing: {plan.group_id}")
+    state.quarantine_policy = (
+        "invalid_timestamp_quarantine" if quarantine_invalid else "v1_missing_timestamps_train"
+    )
     for rec in plan.records:
         router = DuplicateRouter()
         rows_read = 0
@@ -50,14 +55,19 @@ def fit_group(
                 raise PipelineError(f"{rec.file_name}: schema changed while reading chunks")
             rows_read += len(frame)
             _, _, _, times = validate_chunk(frame, rec, type_mapping, state, validation_only=True)
-            base = base_split_codes(times, rec)
+            base = remediated_split_codes(times, rec) if quarantine_invalid else base_split_codes(times, rec)
             if rec.split_mode == "source_file_holdout":
                 # The complete source file is one split, so duplicate rows
                 # cannot cross folds and no per-row router is needed.
                 final_codes = base
             else:
                 fp = duplicate_fingerprints(frame, rec.columns)
-                final_codes = router.route(fp, base)
+                if quarantine_invalid:
+                    final_codes = router.route_masked(
+                        fp, base, base != QUARANTINE_CODE, QUARANTINE_CODE
+                    )
+                else:
+                    final_codes = router.route(fp, base)
             mask = final_codes == SPLIT_CODE["train"]
             if not mask.any():
                 continue
@@ -126,7 +136,24 @@ def fit_preprocessors(
     type_mapping: dict[str, str],
     chunk_size: int,
     state: RunState,
+    *,
+    risk: dict[tuple[str, str, str], dict[str, Any]] | None = None,
+    quarantine_invalid: bool = False,
 ) -> None:
     """Fit every profile using its assigned train rows only."""
     for plan in plans:
-        fit_group(plan, type_mapping, chunk_size, state)
+        if risk is not None and any(spec.kind == "pending" for spec in plan.feature_specs.values()):
+            infer_train_feature_specs(
+                plan,
+                risk,
+                type_mapping,
+                chunk_size,
+                quarantine_invalid=quarantine_invalid,
+            )
+        fit_group(
+            plan,
+            type_mapping,
+            chunk_size,
+            state,
+            quarantine_invalid=quarantine_invalid,
+        )

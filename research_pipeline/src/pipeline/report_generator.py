@@ -268,6 +268,8 @@ def write_protocol(
     preprocessors: list[Path],
     elapsed: float,
     chunk_size: int,
+    *,
+    quarantine_invalid: bool = False,
 ) -> Path:
     total_source = sum(r.rows_expected for r in records)
     total_output = sum(state.output_rows.values())
@@ -288,7 +290,8 @@ def write_protocol(
         "- `label` remains the binary target: 0 = normal and 1 = attack.",
         "- `type` is preserved unchanged; `raw_type` copies it and `canonical_type` uses `config/label_mapping.json`. Unknown types are never coerced into a known attack class.",
         "- `event_time` is added to the semantic view. Network/Linux/Windows numeric `ts` is rendered as UTC epoch time; IoT `date + time` is rendered as source-local text with no claim that clocks are globally synchronized. The original timestamp columns and `raw_timestamp` remain available.",
-        f"- Missing/invalid timestamps are preserved as missing (`event_time=<NA>`): {sum(state.invalid_timestamps.values()):,} rows in the executed pass. They enter an explicit deterministic train bucket when chronological cutoffs are undefined; they are not imputed, zero-filled, or dropped.",
+        f"- Missing/invalid timestamps are preserved as missing (`event_time=<NA>`): {sum(state.invalid_timestamps.values()):,} rows in the executed pass. "
+        + ("They are written only to the quarantine bucket and excluded from Train/Validation/Test." if quarantine_invalid else "They enter the V1 deterministic train bucket when chronological cutoffs are undefined; this is retained only for control/reproduction."),
         "",
         "## Split protocol",
         "",
@@ -297,7 +300,8 @@ def write_protocol(
         "- IoT uses complete chronological calendar-day blocks shared across profiles; each profile schema remains separate and is not merged to manufacture a shared feature space.",
         "- Linux uses the same complete calendar-day blocks; weak scenario provenance remains a limitation, but actual calendar-day units do not cross folds.",
         "- Windows uses the same complete calendar-day blocks because only two source files exist; actual day units do not cross folds.",
-        f"- Corrective boundaries are {calendar_split_description()}. Missing-time rows use an explicit train bucket because no temporal cutoff can be justified.",
+        f"- Corrective boundaries are {calendar_split_description()}. "
+        + ("Missing-time rows use the separate quarantine bucket; cutoffs are unchanged." if quarantine_invalid else "Missing-time rows use the V1 explicit train bucket because no temporal cutoff can be justified."),
         "- Binary baseline eligibility requires both labels in train and test; validation is reported as a preferred both-class condition. Network remains primary and its severe attack imbalance is documented, not resampled.",
         "- Network attack rates remain approximately 97.5% train, 96.8% validation and 90.9% test; downstream model training may use class_weight or model-specific weighting, but this preparation pass does not resample.",
         "- The manifest is partition/file/block-granular, not one row per event. Each row identifies the source file, source block, split, time range and row count; this is reproducible for the 31M-row dataset.",
@@ -402,9 +406,18 @@ def write_final_split_report(
             f"| {coverage.platform} | {'yes' if coverage.train_normal else 'no'} | {'yes' if coverage.train_attack else 'no'} | {'yes' if coverage.validation_both else 'no'} | {'yes' if coverage.test_both else 'no'} | {'BASELINE_ELIGIBLE' if coverage.eligible else 'NOT_BASELINE_ELIGIBLE'} |"
         )
     network_dist = distribution[distribution["platform"] == "Network"].groupby("split")[["normal_count", "attack_count"]].sum()
+    if set(("train", "validation", "test")).issubset(network_dist.index):
+        network_note = (
+            f"- Network imbalance is preserved: train attack rate = {network_dist.loc['train', 'attack_count'] / (network_dist.loc['train'].sum()):.4%}, "
+            f"validation = {network_dist.loc['validation', 'attack_count'] / (network_dist.loc['validation'].sum()):.4%}, "
+            f"test = {network_dist.loc['test', 'attack_count'] / (network_dist.loc['test'].sum()):.4%}. "
+            "Handle this later with model-level class weighting; no resampling was performed."
+        )
+    else:
+        network_note = "- Network imbalance note: Network is not present in this partial acceptance sample."
     lines += [
         "",
-        f"- Network imbalance is preserved: train attack rate = {network_dist.loc['train', 'attack_count'] / (network_dist.loc['train'].sum()):.4%}, validation = {network_dist.loc['validation', 'attack_count'] / (network_dist.loc['validation'].sum()):.4%}, test = {network_dist.loc['test', 'attack_count'] / (network_dist.loc['test'].sum()):.4%}. Handle this later with model-level class weighting; no resampling was performed.",
+        network_note,
         "",
         "## Attack-type coverage",
         "",
@@ -553,10 +566,12 @@ def write_run_summary(
     state: RunState,
     output_root: Path,
     elapsed: float,
+    *,
+    status: str = "success",
 ) -> Path:
     path = output_root / "manifests" / "run_summary.json"
     payload = {
-        "status": "success",
+        "status": status,
         "script": "research_pipeline/src/main.py",
         "project_root": str(PROJECT_ROOT),
         "source_file_count": len(records),
@@ -575,6 +590,7 @@ def write_run_summary(
         ],
         "invalid_labels": dict(state.invalid_labels),
         "invalid_timestamps": dict(state.invalid_timestamps),
+        "quarantine_policy": state.quarantine_policy,
         "unknown_types": dict(state.unknown_types),
         "duplicate_cross_split": dict(state.duplicate_cross_split),
         "elapsed_seconds": elapsed,
@@ -582,6 +598,26 @@ def write_run_summary(
     with path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
     return path
+
+
+def determine_pipeline_status(mode: str, leakage_path: Path) -> str:
+    """Return a terminal status; FAIL never gets reported as SUCCESS.
+
+    V1 is intentionally checked against its committed split audit because it
+    remains a control with known failures.  The remediated path is checked
+    against the executed output checks.
+    """
+    if mode == "v1":
+        audit_path = REPORT_DIR / "split_audit_v2" / "leakage_risks.csv"
+        if audit_path.exists():
+            statuses = pd.read_csv(audit_path, dtype=str).get("status", pd.Series(dtype=str))
+            if (statuses == "FAIL").any():
+                return "blocked_by_audit"
+    if leakage_path.exists():
+        statuses = pd.read_csv(leakage_path, dtype=str).get("status", pd.Series(dtype=str))
+        if (statuses == "FAIL").any():
+            return "blocked_by_audit"
+    return "success"
 
 
 def generate_final_reports(
@@ -594,7 +630,10 @@ def generate_final_reports(
     preprocessors: list[Path],
     started: float,
     chunk_size: int,
-) -> tuple[dict[str, Path], float]:
+    *,
+    mode: str = "v1",
+    quarantine_invalid: bool = False,
+) -> tuple[dict[str, Path], float, str]:
     """Write the same Phase-1 reports in their original dependency order."""
     distribution_path = write_split_distribution(state, output_root)
     leakage_path = write_leakage_check(state, records, plans)
@@ -604,9 +643,11 @@ def generate_final_reports(
     protocol_path = write_protocol(
         records, plans, state, output_root, manifest_path, distribution_path,
         leakage_path, duplicate_path, preprocessors, elapsed, chunk_size,
+        quarantine_invalid=quarantine_invalid,
     )
     handoff_path = write_handoff(plans, output_root, distribution_path)
-    summary_path = write_run_summary(records, plans, state, output_root, elapsed)
+    status = determine_pipeline_status(mode, leakage_path)
+    summary_path = write_run_summary(records, plans, state, output_root, elapsed, status=status)
     split_report_path = write_final_split_report(
         manifest_path, distribution_path, leakage_path, summary_path,
     )
@@ -618,4 +659,4 @@ def generate_final_reports(
         "handoff": handoff_path,
         "summary": summary_path,
         "split report": split_report_path,
-    }, elapsed
+    }, elapsed, status

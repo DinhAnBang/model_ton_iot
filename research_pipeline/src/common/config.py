@@ -19,6 +19,10 @@ ATTACK_LABEL = 1
 SPLITS = ("train", "validation", "test")
 SPLIT_CODE = {name: index for index, name in enumerate(SPLITS)}
 CODE_SPLIT = {index: name for name, index in SPLIT_CODE.items()}
+# Quarantine is deliberately outside the three-fold evaluation protocol.  It
+# is an output bucket only; it must never be treated as train/validation/test.
+QUARANTINE_SPLIT = "quarantine"
+QUARANTINE_CODE = -1
 DEFAULT_CHUNK_SIZE = 250_000
 MAX_CATEGORICAL_LEVELS = 64
 MEDIAN_SAMPLE_SIZE = 50_000

@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..common.config import CODE_SPLIT
+from ..common.config import CODE_SPLIT, QUARANTINE_CODE, QUARANTINE_SPLIT
 from ..common.errors import PipelineError
 from ..common.paths import PROJECT_ROOT
 from ..common.utils import log, safe_json_number, slugify
@@ -19,7 +19,7 @@ from .feature_selector import final_features
 from .models import GroupPlan, RunState, SourceRecord
 from .normalization import event_time_text, format_event_range, raw_timestamp_text, validate_chunk
 from .preprocessor import transform_baseline
-from .split_data import base_split_codes, scenario_id_series
+from .split_data import base_split_codes, remediated_split_codes, scenario_id_series
 
 
 def write_csv_gzip(frame: pd.DataFrame, path: Path) -> None:
@@ -103,6 +103,8 @@ def transform_group(
     output_root: Path,
     state: RunState,
     manifest_rows: list[dict[str, Any]],
+    *,
+    quarantine_invalid: bool = False,
 ) -> None:
     log(f"Write views: {plan.group_id} | baseline features={len(final_features(plan))}")
     for rec in plan.records:
@@ -111,17 +113,23 @@ def transform_group(
         for block_index, frame in enumerate(pd.read_csv(rec.file_path, chunksize=chunk_size, low_memory=False)):
             rows_read += len(frame)
             labels, raw_type, canonical, times = validate_chunk(frame, rec, type_mapping, state)
-            base = base_split_codes(times, rec)
+            base = remediated_split_codes(times, rec) if quarantine_invalid else base_split_codes(times, rec)
             if rec.split_mode == "source_file_holdout":
                 final_codes = base
             else:
                 fp = duplicate_fingerprints(frame, rec.columns)
-                final_codes = router.route(fp, base)
+                if quarantine_invalid:
+                    final_codes = router.route_masked(fp, base, base != QUARANTINE_CODE, QUARANTINE_CODE)
+                else:
+                    final_codes = router.route(fp, base)
             event_text = event_time_text(frame, rec)
             raw_timestamp = raw_timestamp_text(frame, rec)
             scenario_ids = scenario_id_series(times, rec)
             row_numbers = np.arange(rows_read - len(frame), rows_read, dtype=np.int64)
-            for split_code, split in CODE_SPLIT.items():
+            split_items = list(CODE_SPLIT.items())
+            if quarantine_invalid:
+                split_items.append((QUARANTINE_CODE, QUARANTINE_SPLIT))
+            for split_code, split in split_items:
                 mask = final_codes == split_code
                 if not mask.any():
                     continue
@@ -205,13 +213,20 @@ def clear_generated_output(output_root: Path, overwrite: bool) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def write_preprocessor(plan: GroupPlan, output_root: Path, chunk_size: int) -> Path:
+def write_preprocessor(
+    plan: GroupPlan,
+    output_root: Path,
+    chunk_size: int,
+    *,
+    quarantine_invalid: bool = False,
+) -> Path:
     features = final_features(plan)
     payload = {
-        "format": "phase1_train_only_preprocessor_v1",
+        "format": "phase1_train_only_preprocessor_v2" if quarantine_invalid else "phase1_train_only_preprocessor_v1",
         "platform": plan.platform,
         "source_group": plan.group_id,
         "fit_split": "train",
+        "invalid_timestamp_policy": "quarantine" if quarantine_invalid else "V1 train bucket",
         "scaler": "none; tree-based RF/XGBoost/LightGBM baselines do not require scaling",
         "imputer": "numeric train-only median; categorical missing/unseen=-1",
         "categorical_encoder": "train-only ordinal codes; no one-hot; unknown=-1",
@@ -240,6 +255,7 @@ def write_preprocessor(plan: GroupPlan, output_root: Path, chunk_size: int) -> P
             "chunk_size": chunk_size,
             "duplicate_policy": "within-source exact fingerprint; keep all rows; route later duplicate to first encountered split",
             "fingerprint": "pandas hash_pandas_object over all original source columns",
+            "feature_selection": "Train-only streaming inference" if quarantine_invalid else "V1 sample control",
         },
     }
     path = output_root / "preprocessors" / f"{plan.preprocessor_name}.json"
@@ -277,9 +293,19 @@ def export_dataset(
     chunk_size: int,
     output_root: Path,
     state: RunState,
+    *,
+    quarantine_invalid: bool = False,
 ) -> Path:
     """Write both data views and their partition-level split manifest."""
     manifest_rows: list[dict[str, Any]] = []
     for plan in plans:
-        transform_group(plan, type_mapping, chunk_size, output_root, state, manifest_rows)
+        transform_group(
+            plan,
+            type_mapping,
+            chunk_size,
+            output_root,
+            state,
+            manifest_rows,
+            quarantine_invalid=quarantine_invalid,
+        )
     return write_manifest(manifest_rows, output_root)

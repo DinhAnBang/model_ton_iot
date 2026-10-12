@@ -42,3 +42,17 @@ class DuplicateRouter:
                     self.routed += 1
                 final[idx] = previous
         return final
+
+    def route_masked(
+        self,
+        fingerprints: np.ndarray,
+        base_codes: np.ndarray,
+        eligible: np.ndarray,
+        quarantine_code: int = -1,
+    ) -> np.ndarray:
+        """Route only eligible rows and leave quarantined rows untouched."""
+        final = np.full(len(base_codes), quarantine_code, dtype=np.int8)
+        eligible = np.asarray(eligible, dtype=bool)
+        if eligible.any():
+            final[eligible] = self.route(fingerprints[eligible], base_codes[eligible])
+        return final

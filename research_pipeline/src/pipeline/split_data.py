@@ -7,7 +7,13 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
-from ..common.config import CORRECTIVE_TRAIN_END, CORRECTIVE_VALIDATION_END, SPLITS, SPLIT_CODE
+from ..common.config import (
+    CORRECTIVE_TRAIN_END,
+    CORRECTIVE_VALIDATION_END,
+    QUARANTINE_CODE,
+    SPLITS,
+    SPLIT_CODE,
+)
 from ..common.errors import PipelineError
 from .models import ClassCoverage, SourceRecord
 from .normalization import parse_time_bound
@@ -24,23 +30,24 @@ def assign_split_plan(records: list[SourceRecord]) -> None:
         grouped["Network"],
         key=lambda rec: (parse_time_bound(rec.timestamp_min, "Network"), rec.file_name),
     )
-    if len(network_files) < 3:
-        raise PipelineError("Network: source holdout requires at least three files")
-    train_files = max(1, int(round(len(network_files) * 0.70)))
-    validation_files = max(1, int(round(len(network_files) * 0.15)))
-    if train_files + validation_files >= len(network_files):
-        validation_files = 1
-        train_files = len(network_files) - 2
-    for index, rec in enumerate(network_files):
-        if index < train_files:
-            split = "train"
-        elif index < train_files + validation_files:
-            split = "validation"
-        else:
-            split = "test"
-        rec.split_mode = "source_file_holdout"
-        rec.fixed_split = split
-        rec.split_reason = "scenario/source holdout by deterministic chronological source-file order"
+    if network_files:
+        if len(network_files) < 3:
+            raise PipelineError("Network: source holdout requires at least three files")
+        train_files = max(1, int(round(len(network_files) * 0.70)))
+        validation_files = max(1, int(round(len(network_files) * 0.15)))
+        if train_files + validation_files >= len(network_files):
+            validation_files = 1
+            train_files = len(network_files) - 2
+        for index, rec in enumerate(network_files):
+            if index < train_files:
+                split = "train"
+            elif index < train_files + validation_files:
+                split = "validation"
+            else:
+                split = "test"
+            rec.split_mode = "source_file_holdout"
+            rec.fixed_split = split
+            rec.split_reason = "scenario/source holdout by deterministic chronological source-file order"
 
     # Corrective usability pass: the audited temporal coverage shows a mixed
     # normal/attack day on 2019-04-23, mixed validation days on 2019-04-24/25,
@@ -78,6 +85,19 @@ def base_split_codes(times: pd.Series, rec: SourceRecord) -> np.ndarray:
     codes[valid] = SPLIT_CODE["test"]
     codes[valid & (values < rec.block_cut_2)] = SPLIT_CODE["validation"]
     codes[valid & (values < rec.block_cut_1)] = SPLIT_CODE["train"]
+    return codes
+
+
+def remediated_split_codes(times: pd.Series, rec: SourceRecord) -> np.ndarray:
+    """Apply the unchanged V1 cutoffs, but quarantine unknown event times.
+
+    This function intentionally does not alter ``base_split_codes``.  V1 can
+    therefore still be reproduced, while the remediation path cannot claim a
+    chronological placement for rows whose timestamp was not parsed.
+    """
+    codes = base_split_codes(times, rec)
+    values = times.to_numpy(dtype="float64", copy=False)
+    codes[~np.isfinite(values)] = QUARANTINE_CODE
     return codes
 
 

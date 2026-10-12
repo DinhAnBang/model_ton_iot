@@ -1,3 +1,18 @@
-# Runtime and tests for Phase 1 (verified with Python 3.12)
+# Runtime and tests for the current research_pipeline source (Python 3.12).
+# Dataset files and generated reports are intentionally not dependencies.
+
+# Core data pipeline
 numpy>=1.26,<3
 pandas>=2.1,<4
+
+# Phase 3 ML baselines
+scikit-learn>=1.3,<2
+xgboost>=2,<4
+lightgbm>=4,<5
+
+# Phase 3A/3B heterogeneous graph code
+torch>=2,<3
+torch-geometric>=2.5,<3
+
+# Test runner
+pytest>=8,<10

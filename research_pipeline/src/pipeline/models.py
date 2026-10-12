@@ -116,3 +116,4 @@ class RunState:
     baseline_paths: set[str] = field(default_factory=set)
     semantic_paths: set[str] = field(default_factory=set)
     validation_rows: list[dict[str, Any]] = field(default_factory=list)
+    quarantine_policy: str = "v1_missing_timestamps_train"

@@ -9,6 +9,7 @@ import argparse
 import logging
 import sys
 import time
+from pathlib import Path
 
 from .common.config import DEFAULT_CHUNK_SIZE, raw_type_mapping
 from .common.errors import PipelineError
@@ -24,7 +25,7 @@ from .pipeline.output_writer import (
     write_preprocessor,
 )
 from .pipeline.preprocessor import fit_preprocessors
-from .pipeline.report_generator import generate_final_reports
+from .pipeline import report_generator
 from .pipeline.split_data import assign_split_plan
 
 
@@ -33,6 +34,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--overwrite", action="store_true", help="replace only generated output directories")
     parser.add_argument("--max-files", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--output-root", type=Path, default=None, help="isolated generated-output directory")
+    parser.add_argument("--report-dir", type=Path, default=None, help="isolated generated-report directory")
+    parser.add_argument(
+        "--mode",
+        choices=("v1", "remediated"),
+        default="remediated",
+        help="remediated is the safe default; v1 reproduces the existing control explicitly",
+    )
     return parser.parse_args(argv)
 
 
@@ -43,6 +52,12 @@ def main(argv: list[str] | None = None) -> int:
         raise PipelineError("--chunk-size must be positive")
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S", stream=sys.stdout)
     started = time.time()
+    output_root = (args.output_root or DEFAULT_OUTPUT_ROOT).resolve()
+    if args.report_dir is not None:
+        report_generator.REPORT_DIR = args.report_dir.resolve()
+        report_generator.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    if output_root == PROJECT_ROOT or PROJECT_ROOT not in output_root.parents:
+        raise PipelineError("--output-root must stay inside the project root")
     log(f"Project root: {PROJECT_ROOT}")
     log("Loading inventory, label mapping and feature-risk policy")
     type_mapping = raw_type_mapping()
@@ -51,26 +66,54 @@ def main(argv: list[str] | None = None) -> int:
         records = records[: args.max_files]
     assign_split_plan(records)
     risk = read_feature_risk()
-    clear_generated_output(DEFAULT_OUTPUT_ROOT, args.overwrite)
-    plans = make_group_plans(records, risk)
+    clear_generated_output(output_root, args.overwrite)
+    quarantine_invalid = args.mode == "remediated"
+    plans = make_group_plans(records, risk, legacy_sampling=not quarantine_invalid)
     log(f"Input: {len(records)} files / {sum(r.rows_expected for r in records):,} rows")
     log(f"Groups: {', '.join(p.group_id for p in plans)}")
 
     state = RunState()
-    fit_preprocessors(plans, type_mapping, args.chunk_size, state)
-    preprocessors = [write_preprocessor(plan, DEFAULT_OUTPUT_ROOT, args.chunk_size) for plan in plans]
-    manifest_path = export_dataset(plans, type_mapping, args.chunk_size, DEFAULT_OUTPUT_ROOT, state)
-    reports, elapsed = generate_final_reports(
-        records, plans, state, risk, DEFAULT_OUTPUT_ROOT, manifest_path,
+    fit_preprocessors(
+        plans,
+        type_mapping,
+        args.chunk_size,
+        state,
+        risk=risk,
+        quarantine_invalid=quarantine_invalid,
+    )
+    preprocessors = [
+        write_preprocessor(
+            plan,
+            output_root,
+            args.chunk_size,
+            quarantine_invalid=quarantine_invalid,
+        )
+        for plan in plans
+    ]
+    manifest_path = export_dataset(
+        plans,
+        type_mapping,
+        args.chunk_size,
+        output_root,
+        state,
+        quarantine_invalid=quarantine_invalid,
+    )
+    reports, elapsed, status = report_generator.generate_final_reports(
+        records, plans, state, risk, output_root, manifest_path,
         preprocessors, started, args.chunk_size,
+        mode=args.mode,
+        quarantine_invalid=quarantine_invalid,
     )
     validate_final_outputs(state, records)
 
-    log("SUCCESS")
+    if status != "success":
+        log(f"PIPELINE STATUS: {status.upper()}")
+    else:
+        log("SUCCESS")
     for name, path in reports.items():
         log(f"  {name}: {path.relative_to(PROJECT_ROOT)}")
     log(f"  elapsed: {elapsed:.1f}s")
-    return 0
+    return 3 if status != "success" else 0
 
 
 if __name__ == "__main__":

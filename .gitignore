@@ -16,8 +16,36 @@ venv/
 /research_pipeline/output/
 /research_pipeline/reports/
 /research_pipeline/_pre_refactor_backup_*/
+/research_pipeline/output_phase3a_network/
+/research_pipeline/output_phase3b_network/
+/research_pipeline/output_remediation_acceptance_iot/
+
+# Local test scratch directories
+/.phase2_tmp/
+/.pytest_tmp/
+/.tmp_final_protocol_tests/
+/pytest-cache-files-*/
+/.test_temp_run/
+
+# Local dataset packages and review documents (not source code)
+/7ca78ae35fa4961a_MOHANAD_A4706/
+/Edge_IIoTset__DatasetFL.pdf
+/Nhan_xet_bao_cao_ToN_IoT.docx
+/Readme.txt
+/dataset_phan_tich_bo_sung.docx
+/dataset_tong_hop.docx
 
 # Large local exports
 *.zip
 *.parquet
+*.csv
+*.csv.gz
+*.pt
+*.pth
+*.pickle
+*.joblib
+*.sqlite
+*.db
+*.pdf
+*.docx
 *.log
